@@ -6,6 +6,11 @@ import "@fontsource/jetbrains-mono/500.css";
 import "./styles.css";
 import App from "./App";
 
+if (import.meta.env.DEV && !("__TAURI_INTERNALS__" in window)) {
+  const { installDevMock } = await import("./lib/devMock");
+  installDevMock();
+}
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <App />

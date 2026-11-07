@@ -67,7 +67,8 @@ input, textarea { user-select: text; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 input:focus-visible, textarea:focus-visible { outline: none; border-color: var(--accent) !important; }
 
-.mono { font-family: var(--mono); font-variant-ligatures: none; }
+.mono, .hunk, .code { font-family: var(--mono); font-variant-ligatures: none; font-feature-settings: "calt" 0, "liga" 0; }
+.hint { white-space: nowrap; }
 .tabular { font-variant-numeric: tabular-nums; }
 .spin { animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -106,6 +107,7 @@ input:focus-visible, textarea:focus-visible { outline: none; border-color: var(-
 }
 .crumbs { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1 1 0; }
 .crumb { display: flex; flex-direction: column; min-width: 0; }
+.crumb:first-child { flex-shrink: 0; max-width: 180px; }
 .crumb small { font-size: 11px; color: var(--text-3); }
 .crumb strong { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .crumb .mono { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -303,7 +305,7 @@ input:focus-visible, textarea:focus-visible { outline: none; border-color: var(-
 .dl .tx { white-space: pre; color: var(--text-2); padding-right: 16px; }
 .dl.add .tx, .dl.del .tx { color: var(--text); }
 .file-path { display: flex; align-items: baseline; min-width: 0; gap: 0; }
-.file-path .dir { color: var(--text-3); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
+.file-path .dir { color: var(--text-3); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .file-path .fn { font-weight: 600; white-space: nowrap; }
 
 /* ------------------------------------------------------------ changes panel */

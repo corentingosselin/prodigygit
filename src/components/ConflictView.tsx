@@ -26,18 +26,24 @@ const SIDE = {
 };
 
 export function ConflictView(p: Props) {
-  const [current, setCurrent] = useState<string | null>(null);
+  const [picked, setPicked] = useState<string | null>(null);
+  const [manual, setManual] = useState(false);
   const [file, setFile] = useState<ConflictFile | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [picks, setPicks] = useState<Picks>({});
   const [hi, setHi] = useState(0);
 
-  // When the conflict list changes (a file was just resolved), move on to the next open file.
+  // Show the file the user picked; otherwise, and as soon as it gets resolved, the next open one.
   const conflictKey = p.conflicted.join("\n");
-  useEffect(() => {
-    setCurrent((cur) => (cur && p.conflicted.includes(cur) ? cur : p.conflicted[0] ?? p.files[0] ?? null));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conflictKey]);
+  useEffect(() => setManual(false), [conflictKey]);
+  const current =
+    picked && p.files.includes(picked) && (manual || p.conflicted.includes(picked))
+      ? picked
+      : p.conflicted[0] ?? p.files[0] ?? null;
+  const choose = (f: string) => {
+    setPicked(f);
+    setManual(true);
+  };
 
   const isOpen = current !== null && p.conflicted.includes(current);
 
@@ -201,7 +207,7 @@ export function ConflictView(p: Props) {
           {p.files.map((f) => {
             const done = !p.conflicted.includes(f);
             return (
-              <button key={f} className={`cf-row${f === current ? " selected" : ""}`} title={f} onClick={() => setCurrent(f)}>
+              <button key={f} className={`cf-row${f === current ? " selected" : ""}`} title={f} onClick={() => choose(f)}>
                 <span className={`cf-mark ${done ? "done" : "todo"}`}>
                   {done ? <Check size={11} strokeWidth={3} aria-label="Résolu" /> : <AlertTriangle size={10} strokeWidth={2.6} aria-label="À résoudre" />}
                 </span>
