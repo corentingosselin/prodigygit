@@ -1,7 +1,18 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, LoaderCircle, Minus, Plus } from "lucide-react";
 import type { FileChange, StatusInfo } from "../lib/api";
-import { splitPath } from "../lib/format";
+import { splitPath, ticketFromBranch } from "../lib/format";
+import { GitmojiPicker } from "./GitmojiPicker";
+
+const GITMOJI_KEY = "prodigygit.gitmoji";
+
+function savedGitmoji(): string {
+  try {
+    return localStorage.getItem(GITMOJI_KEY) ?? "✨";
+  } catch {
+    return "✨";
+  }
+}
 
 interface Props {
   status: StatusInfo;
@@ -14,20 +25,47 @@ interface Props {
   onStageAll: () => void;
   onUnstageAll: () => void;
   onCommit: (summary: string, description: string) => Promise<boolean>;
+  /** Hidden while a past commit is shown, so a message being typed is kept. */
+  hidden?: boolean;
 }
 
 export function ChangesPanel(p: Props) {
-  const [summary, setSummary] = useState("");
+  // Title template: "<gitmoji> <TICKET> résumé", the ticket coming from the branch name.
+  const prefix = (() => {
+    const t = ticketFromBranch(p.branch);
+    return t ? `${t} ` : "";
+  })();
+  const [summary, setSummary] = useState(prefix);
   const [description, setDescription] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [emoji, setEmoji] = useState(savedGitmoji);
   const total = p.status.unstaged.length + p.status.staged.length;
+
+  // On a branch change, swap the template unless a real message was typed.
+  const lastPrefix = useRef(prefix);
+  useEffect(() => {
+    setSummary((s) => (!s.trim() || s === lastPrefix.current ? prefix : s));
+    lastPrefix.current = prefix;
+  }, [prefix]);
+
+  const pickEmoji = (e: string) => {
+    setEmoji(e);
+    try {
+      localStorage.setItem(GITMOJI_KEY, e);
+    } catch {
+      /* keep it for this session only */
+    }
+  };
+
+  const typed = summary.trim() && summary.trim() !== prefix.trim();
+  const title = [emoji, summary.trim()].filter(Boolean).join(" ");
 
   const submit = async () => {
     if (!p.status.staged.length) return setError("Stage au moins un fichier avant de committer");
-    if (!summary.trim()) return setError("Écris un résumé pour ce commit");
+    if (!typed) return setError("Écris un résumé pour ce commit");
     setError(null);
-    if (await p.onCommit(summary, description)) {
-      setSummary("");
+    if (await p.onCommit(title, description)) {
+      setSummary(prefix);
       setDescription("");
     }
   };
@@ -64,7 +102,7 @@ export function ChangesPanel(p: Props) {
   };
 
   return (
-    <aside className="changes" aria-label="Changements">
+    <aside className="changes" aria-label="Changements" hidden={p.hidden}>
       <div className="changes-head">
         <strong>Changements</strong>
         <small>
@@ -102,18 +140,27 @@ export function ChangesPanel(p: Props) {
         }}
       >
         <label className="field-label" htmlFor="commit-summary">Message du commit</label>
-        <input
-          id="commit-summary"
-          className={`field${error && !summary.trim() ? " invalid" : ""}`}
-          placeholder="Résumé du commit"
-          value={summary}
-          maxLength={200}
-          onChange={(e) => {
-            setSummary(e.target.value);
-            setError(null);
-          }}
-          onKeyDown={(e) => (e.metaKey || e.ctrlKey) && e.key === "Enter" && submit()}
-        />
+        <div className="summary-row">
+          <GitmojiPicker value={emoji} onChange={pickEmoji} />
+          <input
+            id="commit-summary"
+            className={`field${error && !typed ? " invalid" : ""}`}
+            placeholder={prefix ? `${prefix}Résumé du commit` : "Résumé du commit"}
+            value={summary}
+            maxLength={200}
+            onChange={(e) => {
+              setSummary(e.target.value);
+              setError(null);
+            }}
+            onFocus={(e) => {
+              // Put the cursor after the ticket, ready to type.
+              const el = e.currentTarget;
+              if (el.value === prefix) requestAnimationFrame(() => el.setSelectionRange(prefix.length, prefix.length));
+            }}
+            onKeyDown={(e) => (e.metaKey || e.ctrlKey) && e.key === "Enter" && submit()}
+          />
+        </div>
+        {typed && <span className="hint title-preview" title={title}>{title}</span>}
         <textarea
           aria-label="Description du commit"
           className="field"

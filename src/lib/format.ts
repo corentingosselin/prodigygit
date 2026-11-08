@@ -42,3 +42,14 @@ export function avatarColor(name: string): string {
 export function errorText(err: unknown): string {
   return typeof err === "string" ? err : err instanceof Error ? err.message : String(err);
 }
+
+/**
+ * Ticket id at the start of a branch's last segment, uppercased:
+ * "corentingosselin/loy-463-loyalty-wallet-cards" -> "LOY-463", "LOY-1137-loyalty" -> "LOY-1137".
+ * Null when the branch does not start with one ("develop", "hotfix-ss-prototype").
+ */
+export function ticketFromBranch(branch: string | null): string | null {
+  if (!branch) return null;
+  const m = lastSegment(branch).match(/^([A-Za-z][A-Za-z0-9]*-\d+)(?=$|[-_./])/);
+  return m ? m[1].toUpperCase() : null;
+}

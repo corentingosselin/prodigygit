@@ -8,16 +8,19 @@ interface Props {
   diff: FileDiff | null;
   error: string | null;
   onBack: () => void;
-  onToggleStage: () => void;
-  onDiscard: () => void;
+  onToggleStage?: () => void;
+  onDiscard?: () => void;
+  /** Diff of a past commit: no stage or discard, just this label (e.g. "Commit abc1234"). */
+  readOnlyLabel?: string;
+  backLabel?: string;
 }
 
-export function DiffView({ file, staged, diff, error, onBack, onToggleStage, onDiscard }: Props) {
+export function DiffView({ file, staged, diff, error, onBack, onToggleStage, onDiscard, readOnlyLabel, backLabel }: Props) {
   const { dir, name } = splitPath(file);
   return (
     <>
       <div className="view-bar">
-        <button className="btn icon sm" aria-label="Retour à l’historique" onClick={onBack}>
+        <button className="btn icon sm" aria-label={backLabel ?? "Retour à l’historique"} title={backLabel ?? "Retour à l’historique"} onClick={onBack}>
           <ArrowLeft size={15} strokeWidth={2} aria-hidden />
         </button>
         <div className="file-path" title={file}>
@@ -31,17 +34,19 @@ export function DiffView({ file, staged, diff, error, onBack, onToggleStage, onD
           </>
         )}
         <span style={{ marginLeft: "auto" }} />
-        <span className="hint">{staged ? "Stagé" : "Non stagé"}</span>
-        {!staged && (
+        <span className="hint">{readOnlyLabel ?? (staged ? "Stagé" : "Non stagé")}</span>
+        {!readOnlyLabel && !staged && onDiscard && (
           <button className="btn sm ghost danger" onClick={onDiscard}>
             <Undo2 size={14} strokeWidth={1.8} aria-hidden />
             Annuler les changements
           </button>
         )}
-        <button className="btn sm" onClick={onToggleStage}>
-          {staged ? <Minus size={14} strokeWidth={2} aria-hidden /> : <Plus size={14} strokeWidth={2} aria-hidden />}
-          {staged ? "Retirer du stage" : "Stager le fichier"}
-        </button>
+        {!readOnlyLabel && onToggleStage && (
+          <button className="btn sm" onClick={onToggleStage}>
+            {staged ? <Minus size={14} strokeWidth={2} aria-hidden /> : <Plus size={14} strokeWidth={2} aria-hidden />}
+            {staged ? "Retirer du stage" : "Stager le fichier"}
+          </button>
+        )}
       </div>
       <div className="diff-scroll">
         {error && <div className="placeholder"><strong>Diff indisponible</strong>{error}</div>}

@@ -7,6 +7,16 @@ export interface Profile {
   name: string;
   email: string;
   sshKey: string;
+  /** GitHub avatar, set when the profile was imported from gh. */
+  avatarUrl?: string;
+}
+
+export interface GhAccount {
+  login: string;
+  name: string;
+  email: string;
+  avatarUrl: string;
+  active: boolean;
 }
 
 export interface Settings {
@@ -56,6 +66,8 @@ export interface CommitInfo {
   summary: string;
   author: string;
   time: number;
+  /** [added, removed] lines against the first parent; only on recent commits. */
+  stats: [number, number] | null;
 }
 
 export interface History {
@@ -64,6 +76,12 @@ export interface History {
   mine: CommitInfo[];
   theirs: CommitInfo[];
   shared: CommitInfo[];
+  /** Upstream of the shown local branch, e.g. "origin/x". */
+  upstream: string | null;
+  /** Local branch never pushed. */
+  unpublished: boolean;
+  /** SHAs the upstream does not have yet. */
+  unpushed: string[];
 }
 
 export interface FileChange {
@@ -92,6 +110,28 @@ export interface FileDiff {
   binary: boolean;
 }
 
+export interface CommitFile {
+  path: string;
+  oldPath: string | null;
+  status: "A" | "M" | "D" | "R";
+  additions: number;
+  deletions: number;
+  binary: boolean;
+}
+
+export interface CommitDetails {
+  sha: string;
+  short: string;
+  summary: string;
+  body: string;
+  author: string;
+  email: string;
+  time: number;
+  committer: string;
+  parents: string[];
+  files: CommitFile[];
+}
+
 export interface StashEntry {
   index: number;
   message: string;
@@ -110,12 +150,17 @@ export interface ConflictFile {
 export const api = {
   loadSettings: () => invoke<Settings>("load_settings"),
   saveSettings: (settings: Settings) => invoke<void>("save_settings", { settings }),
+  ghAccounts: () => invoke<GhAccount[]>("gh_accounts"),
   repoInfo: (path: string) => invoke<RepoInfo>("repo_info", { path }),
   initRepo: (path: string) => invoke<RepoInfo>("init_repo", { path }),
   cloneRepo: (url: string, parent: string, id: Identity) =>
     invoke<RepoInfo>("clone_repo", { url, parent, id }),
   branches: (path: string) => invoke<Branches>("branches", { path }),
-  history: (path: string) => invoke<History>("history", { path }),
+  /** History of HEAD, or of `branch` (local or remote) without checking it out. */
+  history: (path: string, branch?: string | null) => invoke<History>("history", { path, branch: branch ?? null }),
+  commitDetails: (path: string, sha: string) => invoke<CommitDetails>("commit_details", { path, sha }),
+  commitFileDiff: (path: string, sha: string, file: string, oldPath: string | null) =>
+    invoke<FileDiff>("commit_file_diff", { path, sha, file, oldPath }),
   status: (path: string) => invoke<StatusInfo>("status", { path }),
   diffFile: (path: string, file: string, staged: boolean) =>
     invoke<FileDiff>("diff_file", { path, file, staged }),

@@ -1,3 +1,4 @@
+mod gh;
 mod git;
 mod settings;
 
@@ -14,6 +15,11 @@ fn load_settings(app: AppHandle) -> R<settings::Settings> {
 #[tauri::command(async)]
 fn save_settings(app: AppHandle, settings: settings::Settings) -> R<()> {
     settings::save(&app, &settings)
+}
+
+#[tauri::command(async)]
+fn gh_accounts() -> R<Vec<gh::GhAccount>> {
+    gh::accounts()
 }
 
 #[tauri::command(async)]
@@ -37,8 +43,18 @@ fn branches(path: String) -> R<git::Branches> {
 }
 
 #[tauri::command(async)]
-fn history(path: String) -> R<git::History> {
-    git::history(&path)
+fn history(path: String, branch: Option<String>) -> R<git::History> {
+    git::history(&path, branch.as_deref())
+}
+
+#[tauri::command(async)]
+fn commit_details(path: String, sha: String) -> R<git::CommitDetails> {
+    git::commit_details(&path, &sha)
+}
+
+#[tauri::command(async)]
+fn commit_file_diff(path: String, sha: String, file: String, old_path: Option<String>) -> R<git::FileDiff> {
+    git::commit_file_diff(&path, &sha, &file, old_path.as_deref())
 }
 
 #[tauri::command(async)]
@@ -164,11 +180,14 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_settings,
             save_settings,
+            gh_accounts,
             repo_info,
             init_repo,
             clone_repo,
             branches,
             history,
+            commit_details,
+            commit_file_diff,
             status,
             diff_file,
             stage,

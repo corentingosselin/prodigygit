@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { ProfileAvatar } from "./ProfileAvatar";
 import {
   ArrowDown,
   ArrowUp,
@@ -13,7 +14,6 @@ import {
   Settings2,
 } from "lucide-react";
 import type { Profile } from "../lib/api";
-import { initials, avatarColor } from "../lib/format";
 
 export type Op = "pull" | "push" | "stash" | "pop" | "fetch";
 
@@ -80,7 +80,7 @@ export function Toolbar(p: Props) {
           Push
           <span className={`count${p.ahead ? " ahead" : ""}`}>{p.ahead}</span>
         </button>
-        <button className="btn icon" onClick={() => p.onOp("fetch")} aria-label="Fetch" title="Fetch : mettre à jour les branches distantes">
+        <button className="btn icon" onClick={() => p.onOp("fetch")} aria-label="Fetch maintenant" title="Fetch maintenant. Il se fait aussi tout seul chaque minute et quand tu reviens sur la fenêtre.">
           <OpIcon busy={p.busy === "fetch"}><RefreshCw size={14} strokeWidth={1.8} aria-hidden /></OpIcon>
         </button>
         <div className="tool-sep" aria-hidden />
@@ -102,9 +102,11 @@ export function Toolbar(p: Props) {
 
       <div className="toolbar-end" ref={ref}>
         <button className="profile-btn" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
-          <span className="avatar" style={{ background: prof ? avatarColor(prof.label) : "#3A4150" }}>
-            {prof ? initials(prof.label) : "?"}
-          </span>
+          {prof ? (
+            <ProfileAvatar profile={prof} />
+          ) : (
+            <span className="avatar" style={{ background: "#3A4150" }}>?</span>
+          )}
           <span className="who">
             <span>{prof?.label ?? "Aucun profil"}</span>
             <small>{prof?.login || prof?.email || "config Git du dépôt"}</small>
@@ -125,7 +127,7 @@ export function Toolbar(p: Props) {
                   setOpen(false);
                 }}
               >
-                <span className="avatar" style={{ background: avatarColor(pr.label) }}>{initials(pr.label)}</span>
+                <ProfileAvatar profile={pr} />
                 <span style={{ flex: 1, minWidth: 0 }}>
                   {pr.label}
                   {pr.login && ` · ${pr.login}`}

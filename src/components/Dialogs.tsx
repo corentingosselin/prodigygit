@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, GitBranchPlus, Pencil, Plus, Trash2, UserRound } from "lucide-react";
-import type { Profile } from "../lib/api";
-import { avatarColor, initials } from "../lib/format";
+import { Check, Download, GitBranchPlus, LoaderCircle, Pencil, Plus, Trash2, UserRound } from "lucide-react";
+import { api, type GhAccount, type Profile } from "../lib/api";
+import { ProfileAvatar } from "./ProfileAvatar";
 
 function useEscape(onClose: () => void) {
   useEffect(() => {
@@ -103,7 +103,7 @@ export function CreateBranchDialog({ base, prefix, onCancel, onCreate }: CreateP
 
 interface ConfirmProps {
   title: string;
-  body: string;
+  body: React.ReactNode;
   confirm: string;
   danger?: boolean;
   onCancel: () => void;
@@ -117,7 +117,7 @@ export function ConfirmDialog({ title, body, confirm, danger, onCancel, onConfir
         <div className="dialog-head">
           <h2 id="confirm-title">{title}</h2>
         </div>
-        <p>{body}</p>
+        {typeof body === "string" ? <p>{body}</p> : <div className="dialog-body">{body}</div>}
         <div className="dialog-actions">
           <button className="btn" onClick={onCancel} autoFocus>Annuler</button>
           <button
@@ -147,8 +147,42 @@ const EMPTY: Profile = { id: "", label: "", login: "", name: "", email: "", sshK
 export function ProfilesDialog({ profiles, defaultId, onClose, onSave }: ProfilesProps) {
   const [list, setList] = useState(profiles);
   const [def, setDef] = useState(defaultId);
-  const [edit, setEdit] = useState<Profile | null>(profiles.length ? null : { ...EMPTY });
+  const [edit, setEdit] = useState<Profile | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [gh, setGh] = useState<{ loading: boolean; accounts: GhAccount[] | null; error: string | null }>({
+    loading: false,
+    accounts: null,
+    error: null,
+  });
+
+  const loadGh = async (fallbackToForm: boolean) => {
+    setGh({ loading: true, accounts: null, error: null });
+    try {
+      setGh({ loading: false, accounts: await api.ghAccounts(), error: null });
+    } catch (err) {
+      setGh({ loading: false, accounts: null, error: String(err) });
+      if (fallbackToForm) setEdit({ ...EMPTY });
+    }
+  };
+
+  // First run: offer the accounts gh already knows instead of an empty form.
+  useEffect(() => {
+    if (!profiles.length) loadGh(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const hasLogin = (login: string) => list.some((p) => p.login.toLowerCase() === login.toLowerCase());
+  const importAccounts = (accounts: GhAccount[]) => {
+    const added = accounts
+      .filter((a) => !hasLogin(a.login))
+      .map((a) => ({ id: crypto.randomUUID(), label: a.login, login: a.login, name: a.name, email: a.email, sshKey: "", avatarUrl: a.avatarUrl }));
+    if (!added.length) return;
+    setList((l) => [...l, ...added]);
+    if (!def) {
+      const active = accounts.find((a) => a.active)?.login;
+      setDef((added.find((p) => p.login === active) ?? added[0]).id);
+    }
+  };
 
   const saveEdit = () => {
     if (!edit) return;
@@ -192,7 +226,7 @@ export function ProfilesDialog({ profiles, defaultId, onClose, onSave }: Profile
 
         {list.map((p) => (
           <div key={p.id} className="profile-row">
-            <span className="avatar" style={{ background: avatarColor(p.label) }}>{initials(p.label)}</span>
+            <ProfileAvatar profile={p} />
             <span className="t">
               <b style={{ fontWeight: 500 }}>
                 {p.label}
@@ -237,7 +271,7 @@ export function ProfilesDialog({ profiles, defaultId, onClose, onSave }: Profile
               {field("email", "Email des commits", "toi@exemple.com")}
             </div>
             {field("sshKey", "Clé SSH (optionnelle)", "~/.ssh/id_ed25519_pro", true)}
-            <span className="hint">Sans clé SSH, Git utilise ton agent SSH ou le trousseau macOS, avec le login ci-dessus.</span>
+            <span className="hint">En HTTPS, pull et push utilisent le compte gh de ce login s’il existe, sinon le trousseau macOS. En SSH, sans clé, ton agent SSH.</span>
             {error && <span className="field-error" role="alert">{error}</span>}
             <div className="dialog-actions" style={{ marginTop: 0 }}>
               <button type="button" className="btn sm" onClick={() => { setEdit(null); setError(null); }}>Annuler</button>
@@ -245,10 +279,52 @@ export function ProfilesDialog({ profiles, defaultId, onClose, onSave }: Profile
             </div>
           </form>
         ) : (
-          <button className="btn" style={{ alignSelf: "flex-start" }} onClick={() => setEdit({ ...EMPTY })}>
-            <Plus size={15} strokeWidth={2} aria-hidden />
-            Ajouter un profil
-          </button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn" onClick={() => loadGh(false)} disabled={gh.loading}>
+              {gh.loading ? (
+                <LoaderCircle size={15} strokeWidth={2} className="spin" aria-hidden />
+              ) : (
+                <Download size={15} strokeWidth={2} aria-hidden />
+              )}
+              Importer depuis GitHub CLI
+            </button>
+            <button className="btn ghost" onClick={() => setEdit({ ...EMPTY })}>
+              <Plus size={15} strokeWidth={2} aria-hidden />
+              Profil manuel
+            </button>
+          </div>
+        )}
+
+        {gh.error && !edit && <span className="field-error" role="alert">{gh.error}</span>}
+        {gh.error && edit && <span className="hint">{gh.error}</span>}
+        {gh.accounts && (
+          <div className="gh-import" aria-label="Comptes GitHub CLI">
+            <span className="hint">Comptes connectés dans gh sur ce Mac</span>
+            {gh.accounts.map((a) => (
+              <div key={a.login} className="profile-row">
+                <ProfileAvatar profile={{ label: a.login, avatarUrl: a.avatarUrl }} />
+                <span className="t">
+                  <b style={{ fontWeight: 500 }}>
+                    {a.login}
+                    {a.active && <span className="hint" style={{ marginLeft: 6 }}>actif dans gh</span>}
+                  </b>
+                  <span>{a.name} &lt;{a.email}&gt;</span>
+                </span>
+                {hasLogin(a.login) ? (
+                  <span className="hint" style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <Check size={14} strokeWidth={2.2} aria-hidden /> Ajouté
+                  </span>
+                ) : (
+                  <button className="btn sm" onClick={() => importAccounts([a])}>Ajouter</button>
+                )}
+              </div>
+            ))}
+            {gh.accounts.filter((a) => !hasLogin(a.login)).length > 1 && (
+              <button className="btn sm primary" style={{ alignSelf: "flex-end" }} onClick={() => importAccounts(gh.accounts!)}>
+                Tout ajouter
+              </button>
+            )}
+          </div>
         )}
 
         <div className="dialog-actions">

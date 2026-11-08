@@ -57,7 +57,25 @@ impl GitIdentity {
 /// Runs the git CLI in `dir` and returns stdout, or stderr as the error.
 pub fn git(dir: &str, id: &GitIdentity, args: &[&str]) -> R<String> {
     let mut cmd = Command::new("git");
-    cmd.args(id.config_args()).args(args).current_dir(dir);
+    cmd.args(id.config_args());
+    // For commands that reach the remote, hand Git the token gh holds for this
+    // profile's account, so each repository pushes as its own GitHub account.
+    // Without gh (or without that account in gh), Git falls back to the keychain.
+    let network = matches!(args.first(), Some(&("fetch" | "pull" | "push" | "clone" | "ls-remote")));
+    let token = network
+        .then(|| id.login.as_deref().filter(|l| !l.is_empty()))
+        .flatten()
+        .and_then(|l| crate::gh::token_for(l).map(|t| (l.to_string(), t)));
+    if let Some((login, token)) = token {
+        cmd.args([
+            "-c",
+            "credential.https://github.com.helper=",
+            "-c",
+            "credential.https://github.com.helper=!f() { test \"$1\" = get && echo username=\"$PRODIGYGIT_GH_LOGIN\" && echo password=\"$PRODIGYGIT_GH_TOKEN\"; }; f",
+        ]);
+        cmd.env("PRODIGYGIT_GH_LOGIN", login).env("PRODIGYGIT_GH_TOKEN", token);
+    }
+    cmd.args(args).current_dir(dir);
     for (k, v) in id.env() {
         cmd.env(k, v);
     }
@@ -248,6 +266,8 @@ pub struct CommitInfo {
     pub summary: String,
     pub author: String,
     pub time: i64,
+    /// Lines added and removed against the first parent, filled for recent commits only.
+    pub stats: Option<[usize; 2]>,
 }
 
 #[derive(Serialize)]
@@ -262,6 +282,12 @@ pub struct History {
     pub theirs: Vec<CommitInfo>,
     /// History shared by both, starting at the fork point.
     pub shared: Vec<CommitInfo>,
+    /// Upstream of the shown branch ("origin/x"), when it is a local branch that has one.
+    pub upstream: Option<String>,
+    /// Local branch never pushed: none of its commits are on the remote.
+    pub unpublished: bool,
+    /// Commits of the shown branch that its upstream does not have yet.
+    pub unpushed: Vec<String>,
 }
 
 fn commit_info(repo: &Repository, oid: Oid) -> Option<CommitInfo> {
@@ -273,7 +299,32 @@ fn commit_info(repo: &Repository, oid: Oid) -> Option<CommitInfo> {
         summary: c.summary().unwrap_or("").to_string(),
         author: c.author().name().unwrap_or("").to_string(),
         time: c.time().seconds(),
+        stats: None,
     })
+}
+
+/// Lines added and removed by a commit, against its first parent.
+fn commit_stats(repo: &Repository, sha: &str) -> Option<[usize; 2]> {
+    let c = repo.find_commit(Oid::from_str(sha).ok()?).ok()?;
+    let tree = c.tree().ok()?;
+    let parent = if c.parent_count() > 0 { Some(c.parent(0).ok()?.tree().ok()?) } else { None };
+    let mut opts = DiffOptions::new();
+    opts.context_lines(0);
+    let diff = repo.diff_tree_to_tree(parent.as_ref(), Some(&tree), Some(&mut opts)).ok()?;
+    let st = diff.stats().ok()?;
+    Some([st.insertions(), st.deletions()])
+}
+
+/// Fills `stats` on the first commits of `list`, within a time budget so a huge
+/// monorepo commit never stalls the history.
+fn fill_stats(repo: &Repository, list: &mut [CommitInfo], max: usize, budget: std::time::Duration) {
+    let start = std::time::Instant::now();
+    for c in list.iter_mut().take(max) {
+        if start.elapsed() > budget {
+            break;
+        }
+        c.stats = commit_stats(repo, &c.sha);
+    }
 }
 
 fn walk(repo: &Repository, push: Oid, hide: Option<Oid>, limit: usize) -> R<Vec<CommitInfo>> {
@@ -292,7 +343,8 @@ fn walk(repo: &Repository, push: Oid, hide: Option<Oid>, limit: usize) -> R<Vec<
 
 fn find_base(repo: &Repository, head_name: Option<&str>) -> Option<(String, Oid)> {
     for cand in ["develop", "main", "master"] {
-        if Some(cand) == head_name {
+        let bare = head_name.map(|h| h.split_once('/').filter(|(r, _)| *r == "origin").map_or(h, |(_, b)| b));
+        if Some(cand) == bare {
             continue;
         }
         for full in [format!("refs/heads/{cand}"), format!("refs/remotes/origin/{cand}")] {
@@ -310,24 +362,36 @@ fn find_base(repo: &Repository, head_name: Option<&str>) -> Option<(String, Oid)
     None
 }
 
-pub fn history(path: &str) -> R<History> {
+/// History of HEAD, or of `branch` (a local or remote branch name) when given.
+pub fn history(path: &str, branch: Option<&str>) -> R<History> {
     let repo = open(path)?;
-    let head = match repo.head() {
-        Ok(h) => h,
-        Err(_) => {
-            return Ok(History {
-                head: None,
-                base: None,
-                mine: vec![],
-                theirs: vec![],
-                shared: vec![],
-            });
-        }
+    let (head_name, head_oid) = if let Some(b) = branch {
+        let oid = repo
+            .revparse_single(b)
+            .and_then(|o| o.peel_to_commit())
+            .map_err(|_| format!("Branche introuvable : {b}"))?
+            .id();
+        (Some(b.to_string()), oid)
+    } else {
+        let head = match repo.head() {
+            Ok(h) => h,
+            Err(_) => {
+                return Ok(History {
+                    head: None,
+                    base: None,
+                    mine: vec![],
+                    theirs: vec![],
+                    shared: vec![],
+                    upstream: None,
+                    unpublished: false,
+                    unpushed: vec![],
+                });
+            }
+        };
+        (head.shorthand().map(str::to_string), head.target().ok_or("HEAD invalide")?)
     };
-    let head_name = head.shorthand().map(str::to_string);
-    let head_oid = head.target().ok_or("HEAD invalide")?;
     let base = find_base(&repo, head_name.as_deref());
-    match base {
+    let mut h = match base {
         Some((base_name, base_oid)) => {
             let fork = repo.merge_base(head_oid, base_oid).ok();
             let (mine, theirs, shared) = match fork {
@@ -338,22 +402,52 @@ pub fn history(path: &str) -> R<History> {
                 ),
                 None => (walk(&repo, head_oid, None, 300)?, vec![], vec![]),
             };
-            Ok(History {
-                head: head_name,
+            History {
+                head: head_name.clone(),
                 base: Some(base_name),
                 mine,
                 theirs,
                 shared,
-            })
+                upstream: None,
+                unpublished: false,
+                unpushed: vec![],
+            }
         }
-        None => Ok(History {
-            head: head_name,
+        None => History {
+            head: head_name.clone(),
             base: None,
             mine: vec![],
             theirs: vec![],
             shared: walk(&repo, head_oid, None, 300)?,
-        }),
+            upstream: None,
+            unpublished: false,
+            unpushed: vec![],
+        },
+    };
+
+    // Pushed or not: only meaningful for a local branch.
+    if let Some(local) = head_name.as_deref().and_then(|n| repo.find_branch(n, BranchType::Local).ok()) {
+        match local.upstream() {
+            Ok(up) => {
+                h.upstream = up.name().ok().flatten().map(str::to_string);
+                if let Some(up_oid) = up.get().target() {
+                    let mut rw = repo.revwalk().map_err(e)?;
+                    rw.push(head_oid).map_err(e)?;
+                    rw.hide(up_oid).map_err(e)?;
+                    h.unpushed = rw.filter_map(Result::ok).take(300).map(|o| o.to_string()).collect();
+                }
+            }
+            Err(_) => h.unpublished = true,
+        }
     }
+
+    let budget = std::time::Duration::from_millis(400);
+    if h.base.is_some() {
+        fill_stats(&repo, &mut h.mine, 60, budget);
+    } else {
+        fill_stats(&repo, &mut h.shared, 30, budget);
+    }
+    Ok(h)
 }
 
 // ---------------------------------------------------------------- status
@@ -579,6 +673,11 @@ pub fn diff_file(path: &str, file: &str, staged: bool) -> R<FileDiff> {
         repo.diff_index_to_workdir(None, Some(&mut opts))
     }
     .map_err(e)?;
+    collect_diff(&diff, file, None)
+}
+
+/// Turns a libgit2 diff into hunks and lines. With `only`, keeps the delta whose new path is `only`.
+fn collect_diff(diff: &git2::Diff, file: &str, only: Option<&str>) -> R<FileDiff> {
     let mut out = FileDiff {
         path: file.to_string(),
         hunks: vec![],
@@ -587,6 +686,12 @@ pub fn diff_file(path: &str, file: &str, staged: bool) -> R<FileDiff> {
         binary: false,
     };
     diff.print(DiffFormat::Patch, |delta, _hunk, line| {
+        if let Some(o) = only {
+            let p = delta.new_file().path().or(delta.old_file().path());
+            if p.and_then(|p| p.to_str()) != Some(o) {
+                return true;
+            }
+        }
         if delta.flags().is_binary() {
             out.binary = true;
         }
@@ -617,6 +722,120 @@ pub fn diff_file(path: &str, file: &str, staged: bool) -> R<FileDiff> {
     })
     .map_err(e)?;
     Ok(out)
+}
+
+// ---------------------------------------------------------------- commit details
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitFile {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub status: String,
+    pub additions: usize,
+    pub deletions: usize,
+    pub binary: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitDetails {
+    pub sha: String,
+    pub short: String,
+    pub summary: String,
+    pub body: String,
+    pub author: String,
+    pub email: String,
+    pub time: i64,
+    pub committer: String,
+    pub parents: Vec<String>,
+    pub files: Vec<CommitFile>,
+}
+
+/// Diff of a commit against its first parent (the empty tree for a root commit),
+/// the same view GitHub and GitKraken give for merge commits.
+fn commit_diff<'r>(repo: &'r Repository, sha: &str, paths: &[&str]) -> R<(git2::Commit<'r>, git2::Diff<'r>)> {
+    let oid = Oid::from_str(sha).map_err(|_| format!("Commit invalide : {sha}"))?;
+    let c = repo.find_commit(oid).map_err(|_| format!("Commit introuvable : {sha}"))?;
+    let tree = c.tree().map_err(e)?;
+    let parent = if c.parent_count() > 0 {
+        Some(c.parent(0).and_then(|p| p.tree()).map_err(e)?)
+    } else {
+        None
+    };
+    let mut opts = DiffOptions::new();
+    for p in paths {
+        opts.pathspec(p);
+    }
+    if !paths.is_empty() {
+        opts.disable_pathspec_match(true);
+    }
+    let mut diff = repo
+        .diff_tree_to_tree(parent.as_ref(), Some(&tree), Some(&mut opts))
+        .map_err(e)?;
+    diff.find_similar(None).map_err(e)?;
+    Ok((c, diff))
+}
+
+pub fn commit_details(path: &str, sha: &str) -> R<CommitDetails> {
+    let repo = open(path)?;
+    let (c, diff) = commit_diff(&repo, sha, &[])?;
+    let mut files = Vec::new();
+    for (i, delta) in diff.deltas().enumerate() {
+        let new_path = delta.new_file().path().and_then(|p| p.to_str()).map(str::to_string);
+        let old_path = delta.old_file().path().and_then(|p| p.to_str()).map(str::to_string);
+        let status = match delta.status() {
+            git2::Delta::Added => "A",
+            git2::Delta::Deleted => "D",
+            git2::Delta::Renamed => "R",
+            _ => "M",
+        };
+        let (mut additions, mut deletions, mut binary) = (0, 0, delta.flags().is_binary());
+        if let Ok(Some(patch)) = git2::Patch::from_diff(&diff, i) {
+            if let Ok((_, a, d)) = patch.line_stats() {
+                additions = a;
+                deletions = d;
+            }
+            binary |= patch.delta().flags().is_binary();
+        }
+        let path = new_path.clone().or(old_path.clone()).unwrap_or_default();
+        files.push(CommitFile {
+            old_path: if status == "R" { old_path } else { None },
+            path,
+            status: status.into(),
+            additions,
+            deletions,
+            binary,
+        });
+    }
+    let sha = c.id().to_string();
+    let message = c.message().unwrap_or("");
+    let body = message
+        .split_once('\n')
+        .map(|(_, rest)| rest.trim().to_string())
+        .unwrap_or_default();
+    Ok(CommitDetails {
+        short: sha[..7].to_string(),
+        summary: c.summary().unwrap_or("").to_string(),
+        body,
+        author: c.author().name().unwrap_or("").to_string(),
+        email: c.author().email().unwrap_or("").to_string(),
+        time: c.time().seconds(),
+        committer: c.committer().name().unwrap_or("").to_string(),
+        parents: c.parent_ids().map(|p| p.to_string()[..7].to_string()).collect(),
+        files,
+        sha,
+    })
+}
+
+pub fn commit_file_diff(path: &str, sha: &str, file: &str, old_path: Option<&str>) -> R<FileDiff> {
+    let repo = open(path)?;
+    let mut paths = vec![file];
+    if let Some(o) = old_path.filter(|o| *o != file) {
+        paths.push(o);
+    }
+    let (_, diff) = commit_diff(&repo, sha, &paths)?;
+    collect_diff(&diff, file, Some(file))
 }
 
 // ---------------------------------------------------------------- remote ops
@@ -853,11 +1072,32 @@ mod tests {
         commit(ps, "theirs", "", &id).unwrap();
         checkout(ps, "me/feature", &id).unwrap();
 
-        let h = history(ps).unwrap();
+        let h = history(ps, None).unwrap();
         assert_eq!(h.base.as_deref(), Some("develop"));
         assert_eq!(h.mine.len(), 1);
         assert_eq!(h.theirs.len(), 1);
         assert_eq!(h.shared.len(), 1);
+
+        // Another branch's history, viewed without checking it out.
+        // Never pushed (no remote in this test), with line stats on its own commits.
+        assert!(h.unpublished);
+        assert_eq!(h.mine[0].stats, Some([1, 1]));
+
+        let hd = history(ps, Some("develop")).unwrap();
+        assert_eq!(hd.head.as_deref(), Some("develop"));
+        assert_eq!(hd.base, None);
+        assert_eq!(hd.shared.len(), 2);
+
+        // A past commit: its files, their stats, and one file's diff.
+        let mine_sha = h.mine[0].sha.clone();
+        let cd = commit_details(ps, &mine_sha).unwrap();
+        assert_eq!(cd.summary, "mine");
+        assert_eq!(cd.files.len(), 1);
+        assert_eq!((cd.files[0].status.as_str(), cd.files[0].additions, cd.files[0].deletions), ("M", 1, 1));
+        let fd = commit_file_diff(ps, &mine_sha, "f.txt", None).unwrap();
+        assert!(fd.hunks[0].lines.iter().any(|l| l.kind == "+" && l.text == "mine"));
+        let root = commit_details(ps, &h.shared[0].sha).unwrap();
+        assert_eq!(root.files[0].status, "A");
 
         let m = merge(ps, "develop", &id).unwrap();
         assert_eq!(m.conflicted, vec!["f.txt".to_string()]);
@@ -868,10 +1108,26 @@ mod tests {
         assert!(status(ps).unwrap().conflicted.is_empty());
         commit(ps, "Merge develop", "", &id).unwrap();
         assert!(!repo_info(ps).unwrap().merging);
-        assert_eq!(history(ps).unwrap().theirs.len(), 0);
+        assert_eq!(history(ps, None).unwrap().theirs.len(), 0);
 
         let b = branches(ps).unwrap();
         assert!(b.local.iter().any(|l| l.name == "me/feature" && l.is_head));
         delete_branch(ps, "develop", false, &id).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod fixture_check {
+    /// `PRODIGYGIT_REPO=… cargo test -- --ignored fixture_history --nocapture`
+    #[test]
+    #[ignore]
+    fn fixture_history() {
+        let path = std::env::var("PRODIGYGIT_REPO").expect("PRODIGYGIT_REPO");
+        let h = super::history(&path, None).unwrap();
+        println!("head={:?} base={:?} upstream={:?} unpublished={} unpushed={}", h.head, h.base, h.upstream, h.unpublished, h.unpushed.len());
+        for c in &h.mine {
+            println!("mine {} {:?} {}", c.short, c.stats, c.summary);
+        }
+        println!("theirs={} shared={}", h.theirs.len(), h.shared.len());
     }
 }
