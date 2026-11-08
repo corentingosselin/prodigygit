@@ -1,0 +1,73 @@
+# Builds the macOS app (.dmg, Apple Silicon and Intel in one universal binary).
+#
+# - Push on main: publishes the .dmg on the GitHub release "v<version>"
+#   (version from src-tauri/tauri.conf.json); later pushes replace the file.
+# - Pull request: builds and attaches the .dmg to the workflow run, no release.
+# - "Run workflow" button (Actions tab): same as a push on main.
+name: Build macOS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - run: npm ci
+
+      - name: Tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+
+      - name: Build and publish the release
+        if: github.event_name != 'pull_request'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: --target universal-apple-darwin --bundles dmg
+          tagName: v__VERSION__
+          releaseName: prodigygit v__VERSION__
+          releaseBody: |
+            Télécharge le fichier `.dmg`, ouvre-le et glisse prodigygit dans Applications.
+
+            L'app n'est pas signée par un certificat Apple : au premier lancement, macOS peut refuser de l'ouvrir. Lance alors une fois dans un terminal :
+
+            ```
+            xattr -cr /Applications/prodigygit.app
+            ```
+          releaseDraft: false
+          prerelease: false
+
+      - name: Build only (pull request)
+        if: github.event_name == 'pull_request'
+        run: npx tauri build --target universal-apple-darwin --bundles dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prodigygit-macos-dmg
+          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
