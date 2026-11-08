@@ -16,6 +16,8 @@ pub struct Profile {
     pub email: String,
     /// Optional private key for SSH remotes.
     pub ssh_key: String,
+    /// GitHub avatar, filled when the profile comes from gh.
+    pub avatar_url: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]

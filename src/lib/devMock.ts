@@ -9,7 +9,8 @@ const c = (sha: string, summary: string, author: string, ago: number) => ({
   short: sha.slice(0, 7),
   summary,
   author,
-  time: now - ago,
+  time: Math.round(now - ago),
+  stats: null as [number, number] | null,
 });
 
 const CG = "Corentin Gosselin";
@@ -33,9 +34,11 @@ const history = {
   head: cur,
   base: "develop",
   mine: [
-    c("a1f3c2e", "LOY-463 Rework the Wallet tab identity section", CG, 2 * H),
-    c("9be14d0", "LOY-463 Keep Wallet platform state after saving", CG, 26 * H),
-    c("77c0a91", "LOY-463 Don't lose Wallet edits made while an image uploads", CG, 27 * H),
+    { ...c("d90b7aa", "🐛 LOY-463 Fix the crash when an image upload fails", CG, 0.2 * H), stats: [12, 4] as [number, number] },
+    { ...c("5c2e8f1", "💄 LOY-463 Tighten the Wallet sheet spacing", CG, 0.9 * H), stats: [31, 22] as [number, number] },
+    { ...c("a1f3c2e", "✨ LOY-463 Rework the Wallet tab identity section", CG, 2 * H), stats: [148, 39] as [number, number] },
+    { ...c("9be14d0", "LOY-463 Keep Wallet platform state after saving", CG, 26 * H), stats: [27, 3] as [number, number] },
+    { ...c("77c0a91", ":bug: LOY-463 Don't lose Wallet edits made while an image uploads", CG, 27 * H), stats: [64, 18] as [number, number] },
   ],
   theirs: [
     c("e4d21b7", "Merge pull request #142 from acme-app/develop", BL, 1 * H),
@@ -48,6 +51,9 @@ const history = {
     c("f7e20b1", "Menu import tools (read, import, update, publish)", CG, 8 * 24 * H),
     c("2c11e08", "Disable axios proxying for the menu download", CG, 9 * 24 * H),
   ],
+  upstream: "origin/" + cur,
+  unpublished: false,
+  unpushed: ["d90b7aa", "5c2e8f1", "a1f3c2e"].map((x) => x.padEnd(40, "0")),
 };
 
 const branches = {
@@ -129,6 +135,12 @@ async function invoke(cmd: string, args: Record<string, any> = {}): Promise<unkn
   switch (cmd) {
     case "load_settings": return settings;
     case "save_settings": settings = args.settings; return null;
+    case "gh_accounts":
+      await new Promise((r) => setTimeout(r, 500));
+      return [
+        { login: "corentingosselin", name: "Corentin Gosselin", email: "corentin@example.com", avatarUrl: "", active: true },
+        { login: "corentin-work", name: "Corentin Gosselin", email: "12345+corentin-work@users.noreply.github.com", avatarUrl: "", active: false },
+      ];
     case "repo_info": {
       const path = args.path as string;
       return { path, name: path.split("/").pop(), head: cur, merging: state.merging };
@@ -138,6 +150,24 @@ async function invoke(cmd: string, args: Record<string, any> = {}): Promise<unkn
     case "status": return { unstaged: state.unstaged, staged: state.staged, conflicted: state.conflicted };
     case "stash_list": return [{ index: 0, message: "WIP on loy-463: essai de couleur" }];
     case "diff_file": return { ...diff, path: args.file };
+    case "commit_file_diff": return { ...diff, path: args.file };
+    case "commit_details": {
+      const all = [...history.mine, ...history.theirs, ...history.shared];
+      const c = all.find((x) => x.sha === args.sha) ?? all[0];
+      return {
+        ...c,
+        body: "Refonte de la section identité de l’onglet Wallet.\n\nRefs LOY-463",
+        email: "corentin@example.com",
+        committer: c.author,
+        parents: ["a1f3c2e"],
+        files: [
+          { path: "apps/loyalty-app/app/components/WalletSheet.tsx", oldPath: null, status: "M", additions: 24, deletions: 9, binary: false },
+          { path: "libs/loyalty/feature/src/lib/identity.ts", oldPath: null, status: "A", additions: 58, deletions: 0, binary: false },
+          { path: "libs/loyalty/feature/src/lib/old-identity.ts", oldPath: null, status: "D", additions: 0, deletions: 41, binary: false },
+          { path: "apps/loyalty-app/assets/wallet.png", oldPath: null, status: "M", additions: 0, deletions: 0, binary: true },
+        ],
+      };
+    }
     case "stage": move(state.unstaged, state.staged, args.files); return null;
     case "unstage": move(state.staged, state.unstaged, args.files); return null;
     case "stage_all": move(state.unstaged, state.staged, state.unstaged.map((f) => f.path)); return null;
@@ -157,8 +187,13 @@ async function invoke(cmd: string, args: Record<string, any> = {}): Promise<unkn
       state.merging = false;
       state.conflicted = [];
       return null;
-    case "fetch": case "pull": case "push": case "checkout": case "create_branch":
-    case "delete_branch": case "stash_push": case "stash_pop": case "discard":
+    case "fetch": (window as any).__fetchCount = ((window as any).__fetchCount ?? 0) + 1; return null;
+    case "pull": case "push": case "checkout": case "create_branch":
+    case "delete_branch":
+      if (args.name === "develop" && !args.force) throw "error: the branch 'develop' is not fully merged.";
+      branches.local = branches.local.filter((b) => b.name !== args.name);
+      return null;
+    case "stash_push": case "stash_pop": case "discard":
       return null;
     default:
       throw `Commande inconnue en mode démo : ${cmd}`;
